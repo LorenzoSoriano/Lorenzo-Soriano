@@ -1,0 +1,409 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using System.Threading;
+
+public class ChunkGeneretor
+{
+
+    [Header("Mesh Variables")]
+    public MeshRenderer meshRenderer; // inizializza il componente meshrender
+    public MeshFilter meshFilter; // inizializza il componente meshfilter
+    public MeshCollider meshCollider; // inzializza il componente meshCollide
+    List<Vector3> vertices = new List<Vector3>(); // memorizza i vertici delle mesh
+    List<int> triangles = new List<int>(); // memorizza i triangolo per generare le mesh
+    List<int> transparentTriangles = new List<int>();
+    List<Vector2> uvs = new List<Vector2>(); // memorizza le texture per i blochi
+    Material[] materials = new Material[2];
+    public Vector3 Position;
+    int VertexIndex = 0; // memorizza il vertexIndex per generare i vertici
+
+
+    [Header("Object Variables")]
+    public ChunkCoord coord; // memorizza ultime cordinate del chunk
+    World world; // inizializza oggetto world
+    GameObject ChunckObject; // inizializza oggetto chunk
+
+
+    [Header("Chunk Variables")]
+    public byte[,,] VoxelMap = new byte[MeshData.ChunkWidth, MeshData.ChunkHeight, MeshData.ChunkWidth]; // memorizza il mondo in modo non fisico
+    private bool IsVoxelMapPopulated = false;
+    public Queue<VoxelMod> Modifications = new Queue<VoxelMod>();
+    private bool _IsActive;
+    private bool ThreadingLocked = false;
+
+
+    //Aggiorna e crea i chunk
+    public ChunkGeneretor(ChunkCoord _Coord, World _World, bool GenerateOnLoad)
+    {
+
+        coord = _Coord; // prende le ultime cordiante del chunk                
+        world = _World; //aggiorna Oggetto World con le ultime modifiche
+
+        isActive = true;
+
+        if (GenerateOnLoad)
+            Init();
+
+
+    }// Genera un Chunk se non esiste nel caso lo calcolca    
+
+
+
+    public void Init()
+    {
+
+        ChunckObject = new GameObject();
+        meshFilter = ChunckObject.AddComponent<MeshFilter>();
+        meshRenderer = ChunckObject.AddComponent<MeshRenderer>();
+
+        materials[0] = world.MainMatirial;
+        materials[1] = world.TransparentMaterial;
+        meshRenderer.materials = materials;
+
+        ChunckObject.transform.SetParent(world.transform);
+        ChunckObject.transform.position = new Vector3(coord.x * MeshData.ChunkWidth, 0f, coord.z * MeshData.ChunkWidth);
+        ChunckObject.name = "Chunk " + coord.x + ", " + coord.z;
+        Position = ChunckObject.transform.position;
+
+        Thread myThread = new Thread(new ThreadStart(PopulateVoxelMap));
+        myThread.Start();
+
+    }
+
+    void PopulateVoxelMap()
+    {
+
+        for (int y = 0; y < MeshData.ChunkHeight; y++)
+        {
+
+            for (int x = 0; x < MeshData.ChunkWidth; x++)
+            {
+
+                for (int z = 0; z < MeshData.ChunkWidth; z++)
+                {
+
+                    VoxelMap[x, y, z] = world.GetVoxel(new Vector3(x, y, z) + Position);
+
+                }
+
+            }
+
+        }
+
+        _updateChunk();
+
+        IsVoxelMapPopulated = true;
+
+    }
+
+    public void UpdateChunk()
+    {
+
+        Thread myThread = new Thread(new ThreadStart(_updateChunk));
+        myThread.Start();
+
+    }
+
+    private void _updateChunk()
+    {
+
+        ThreadingLocked = true;
+
+        while (Modifications.Count > 0)
+        {
+
+            VoxelMod v = Modifications.Dequeue();
+            Vector3 pos = v.position -= Position;
+            VoxelMap[(int)pos.x, (int)pos.y, (int)pos.z] = v.id;
+
+        }
+
+        ClearMeshData();
+
+        for (int y = 0; y < MeshData.ChunkHeight; y++)
+        {
+
+            for (int x = 0; x < MeshData.ChunkWidth; x++)
+            {
+
+                for (int z = 0; z < MeshData.ChunkWidth; z++)
+                {
+
+                    if (world.blocktype[VoxelMap[x, y, z]].IsSolid)
+                        UpdateMeshData(new Vector3(x, y, z));
+
+                }
+
+            }
+
+        }
+
+        lock (world.ChunksToDraw)
+        {
+
+            world.ChunksToDraw.Enqueue(this);
+
+        }
+
+        ThreadingLocked = false;
+
+    }
+
+    void ClearMeshData()
+    {
+
+        VertexIndex = 0;
+        vertices.Clear();
+        triangles.Clear();
+        transparentTriangles.Clear();
+        uvs.Clear();
+
+    }
+
+    public bool isActive
+    {
+
+        get { return _IsActive; }
+
+        set
+        {
+
+            _IsActive = value;
+
+            if (ChunckObject != null)
+                ChunckObject.SetActive(value);
+
+        }
+
+    }
+
+    public bool isEditable
+    {
+
+        get
+        {
+
+            if (!IsVoxelMapPopulated || ThreadingLocked)
+                return false;
+
+            else
+                return true;
+
+        }
+
+    }
+
+    bool IsVoxelInChunk(int x, int y, int z)
+    {
+
+        if (x < 0 || x > MeshData.ChunkWidth - 1 || y < 0 || y > MeshData.ChunkHeight - 1 || z < 0 || z > MeshData.ChunkWidth - 1)
+            return false;
+
+        else
+            return true;
+
+    }
+
+    public void EditVoxel(Vector3 pos, byte newID)
+    {
+
+        int xCheck = Mathf.FloorToInt(pos.x);
+        int yCheck = Mathf.FloorToInt(pos.y);
+        int zCheck = Mathf.FloorToInt(pos.z);
+
+        xCheck -= Mathf.FloorToInt(ChunckObject.transform.position.x);
+        zCheck -= Mathf.FloorToInt(ChunckObject.transform.position.z);
+
+        VoxelMap[xCheck, yCheck, zCheck] = newID;
+
+        UpdateSurroundingVoxels(xCheck, yCheck, zCheck);
+
+        _updateChunk();
+
+    }
+
+    void UpdateSurroundingVoxels(int x, int y, int z)
+    {
+
+        Vector3 thisVoxel = new Vector3(x, y, z);
+
+        for (int p = 0; p < 6; p++)
+        {
+
+            Vector3 currentVoxel = thisVoxel + MeshData.FaceChecks[p];
+
+            if (!IsVoxelInChunk((int)currentVoxel.x, (int)currentVoxel.y, (int)currentVoxel.z))
+            {
+
+                world.GetChunkFromVector3(currentVoxel + Position)._updateChunk();
+
+            }
+
+        }
+
+    }
+
+    bool CheckVoxel(Vector3 pos)
+    {
+
+        int x = Mathf.FloorToInt(pos.x);
+        int y = Mathf.FloorToInt(pos.y);
+        int z = Mathf.FloorToInt(pos.z);
+
+        if (!IsVoxelInChunk(x, y, z))
+            return world.CheckIfVoxelTransparent(pos + Position);
+
+        return world.blocktype[VoxelMap[x, y, z]].IsTransapent;
+
+    }
+
+    public byte GetVoxelFromGlobalVector3(Vector3 pos)
+    {
+
+        int xCheck = Mathf.FloorToInt(pos.x);
+        int yCheck = Mathf.FloorToInt(pos.y);
+        int zCheck = Mathf.FloorToInt(pos.z);
+
+        xCheck -= Mathf.FloorToInt(Position.x);
+        zCheck -= Mathf.FloorToInt(Position.z);
+
+        return VoxelMap[xCheck, yCheck, zCheck];
+
+    }
+
+    void UpdateMeshData(Vector3 pos)
+    {
+
+        byte blockID = VoxelMap[(int)pos.x, (int)pos.y, (int)pos.z];
+
+        bool isTransparent = world.blocktype[blockID].IsTransapent;
+
+        for (int p = 0; p < 6; p++)
+        {
+
+            if (CheckVoxel(pos + MeshData.FaceChecks[p]))
+            {
+
+                vertices.Add(pos + MeshData.VoxelVertices[MeshData.FaceTriangles[p, 0]]);
+                vertices.Add(pos + MeshData.VoxelVertices[MeshData.FaceTriangles[p, 1]]);
+                vertices.Add(pos + MeshData.VoxelVertices[MeshData.FaceTriangles[p, 2]]);
+                vertices.Add(pos + MeshData.VoxelVertices[MeshData.FaceTriangles[p, 3]]);
+
+                AddTexture(world.blocktype[blockID].GetTexture(p));
+
+                if (!isTransparent)
+                {
+                    triangles.Add(VertexIndex);
+                    triangles.Add(VertexIndex + 1);
+                    triangles.Add(VertexIndex + 2);
+                    triangles.Add(VertexIndex + 2);
+                    triangles.Add(VertexIndex + 1);
+                    triangles.Add(VertexIndex + 3);
+                }
+
+                else
+                {
+                    transparentTriangles.Add(VertexIndex);
+                    transparentTriangles.Add(VertexIndex + 1);
+                    transparentTriangles.Add(VertexIndex + 2);
+                    transparentTriangles.Add(VertexIndex + 2);
+                    transparentTriangles.Add(VertexIndex + 1);
+                    transparentTriangles.Add(VertexIndex + 3);
+                }
+
+                VertexIndex += 4;
+
+            }
+
+        }
+
+    }
+
+    public void CreateMesh()
+    {
+
+        Mesh mesh = new Mesh();
+        mesh.vertices = vertices.ToArray();
+
+        mesh.subMeshCount = 2;
+        mesh.SetTriangles(triangles.ToArray(), 0);
+        mesh.SetTriangles(transparentTriangles.ToArray(), 1);
+
+        mesh.uv = uvs.ToArray();
+
+        mesh.RecalculateNormals();
+
+        meshFilter.mesh = mesh;
+
+    }
+
+    void AddTexture(int textureID)
+    {
+
+        float y = textureID / MeshData.IndexHeightTexture;
+        float x = textureID - (y * MeshData.IndexHeightTexture);
+
+        x *= MeshData.NormalizeTextureBlockSize;
+        y *= MeshData.NormalizeTextureBlockSize;
+
+        y = 1f - y - MeshData.NormalizeTextureBlockSize;
+
+        uvs.Add(new Vector2(x, y));
+        uvs.Add(new Vector2(x, y + MeshData.NormalizeTextureBlockSize));
+        uvs.Add(new Vector2(x + MeshData.NormalizeTextureBlockSize, y));
+        uvs.Add(new Vector2(x + MeshData.NormalizeTextureBlockSize, y + MeshData.NormalizeTextureBlockSize));
+
+
+    }
+
+}
+
+public class ChunkCoord // Funzioni per memorizare le cordiante 
+{
+
+    public int x;
+    public int z;
+
+    public ChunkCoord() // resetta le cordinate dei chunk
+    {
+
+        x = 0;
+        z = 0;
+
+    }
+
+    public ChunkCoord(int _x, int _z) // memorizza le ultime cordinate del chuck
+    {
+
+        x = _x;
+        z = _z;
+
+    }
+
+    public ChunkCoord(Vector3 Pos) // calcolca le cordinate del chunk
+    {
+
+        int xCheck = Mathf.FloorToInt(Pos.x);
+        int zCheck = Mathf.FloorToInt(Pos.z);
+
+        x = xCheck / MeshData.ChunkWidth;
+        z = zCheck / MeshData.ChunkWidth;
+
+    }
+
+    public bool Equals(ChunkCoord other) // controlla le cordinate se il chunk esiste
+    {
+        
+        if (other == null)
+            return false;
+
+        else if (other.x == x && other.z == z)
+            return true;
+
+        else
+            return false;
+
+    }
+
+} // memorizza le ultime cordinate del ultimo chunk dove sta il player
