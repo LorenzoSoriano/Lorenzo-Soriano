@@ -1,0 +1,53 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+//Crea un nuovo asset per creare i vari biomi
+[System.Serializable]
+[CreateAssetMenu(fileName = "BiomeAttribute", menuName = "Minecraft/Biome Data")] 
+public class BiomeAttribute : ScriptableObject
+{
+
+    [Header("Biome Variables")]
+    public string BiomeName; // nome del bioma
+
+
+    [Header("Terrain Variables")]
+    public int SolidGroundHeight; // Altezza soldia del terreno
+    public int TerrainHeight; //  Altezza massima dle Chunk
+    public float TerrainScale; // Scala del terreno per renderlo piu ho meno scosceso
+
+
+
+    [Header("Tree Variables")]
+    public float TreeZoneScale = 1.3f; // grandezza della zona dei alberi 
+    public float TreePlacementScale = 15; // grandezza della di spawn dei alberi
+    public int MaxTreeHeight = 3; // altezza massimo del albero
+    public int MinTreeHeight = 2; // altezza minima del albero
+
+    [Range(0.1f, 1f)]
+    public float TreeZoneThreshold = 0.6f; // soglia di spawn dei alberi della zona
+
+    [Range(0.1f, 1f)]
+    public float TreePlacementThreshold = 0.8f;  // distanza tra un albero al altro
+
+
+
+    [Header("SUB-Terrain Variables")]
+    public Lode[] Lodes; // crea la classe lode per variare la composizione del terreno
+
+}
+
+[System.Serializable]
+public class Lode
+{
+
+    public string nodeName; // nome del materiale che andra a posizonare
+    public byte BlockID; // id della texture 
+    public int MinHeight; // altezza minima da dove iniziera ad variare il terreno
+    public int MaxHeight; // altezza massima da dove iniziara ad variare il terreno
+    public float Scale; // scala della variazione del terreno
+    public float Threshold; // serve per capire se la variazione del terreno supera la superfice
+    public float NoiseOffSet; // serve per dare una percentuale di apparizione del terreno variato,
+                              // nel caso che sia piu piccola apparia piu spesso
+}
