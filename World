@@ -1,0 +1,500 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+
+public class World : MonoBehaviour
+{
+
+    [Header("World Variables")]
+    public BiomeAttribute Biome; // memorizza i biomi del mondo
+    public Transform Player; // inizializza object del player
+    public Material TransparentMaterial; // inizializza il materiale transparente
+    public Material MainMatirial; // memorizza il materiale main dove si prendono tutte le texture
+    public int Seed; // Seed per generare il mondo
+
+    [Header("Chunk Variables")]
+    ChunkGeneretor[,] Chunks = new ChunkGeneretor[MeshData.WorldSizeInChunks, MeshData.WorldSizeInChunks]; // memorizza tutti i chunk
+    List<ChunkCoord> activeChunks = new List<ChunkCoord>(); // memorizza i chunk attivi
+    List<ChunkCoord> ChunksToCreate = new List<ChunkCoord>(); // Crea i chunk
+    List<ChunkGeneretor> ChunksToUpdate = new List<ChunkGeneretor>(); // Aggiorna il chunk
+    Queue<Queue<VoxelMod>> Modifications = new  Queue<Queue<VoxelMod>>(); // Memorizza le modifiche
+    public Queue<ChunkGeneretor> ChunksToDraw = new Queue<ChunkGeneretor>();
+    bool ApplyingModifications = false; // serve per capire quando applicare le modifiche del mondo
+
+    [Header("Player Variables")]
+    public Vector3 SpawnPoint; // memorizza lo spawn del Player 
+    public ChunkCoord PlayerChunkCoord; // cordinate del chunk dove si trova il player
+    public ChunkCoord PlayerLastChunkCoord; // memorizza ultime cordiante del chunk dove si trova il player
+    private bool _InUi = false;
+
+
+    [Header("Object Variables")]
+    public GameObject DebugScreen; // debugScreen
+    public GameObject ConsoleScreen;
+    public GameObject Cursor;
+    public GameObject ToolBar;
+
+
+    [Header("Block Variables")]
+    public BlockType[] blocktype; // memorizza il blocktype per un singolo blocco
+
+
+
+    //Funzioni base di unity
+    private void Start()
+    {
+        // Randomizza il Seed
+        Random.InitState(Seed);
+
+        // Calcola lo SpawnPoint 
+        SpawnPoint = new Vector3((MeshData.WorldSizeInChunks * MeshData.ChunkWidth) / 2f, MeshData.ChunkHeight - 50f, (MeshData.WorldSizeInChunks * MeshData.ChunkWidth) / 2f);
+
+        // Inizia la Generazione del Mondo e dei Chunck iniziali
+        GenerateWorld();
+
+        // Prende prende le cordinate x y del ultimo chunck dove e stanziato il player
+        PlayerLastChunkCoord = GetChunkCoordFromVector3(Player.position);
+
+
+        DebugScreen.SetActive(false); // setta il debugscreen = false
+        Cursor.SetActive(true);
+        ConsoleScreen.SetActive(false);
+
+    } //inizia la generazione del mondo
+    private void Update()
+    {
+
+        PlayerChunkCoord = GetChunkCoordFromVector3(Player.position);
+
+        // se le cordiante del chunk dove e stanziato il palayer se e diverso dal le cordiate del player esegue 
+        if (!PlayerChunkCoord.Equals(PlayerLastChunkCoord))
+            CheckViewDistance(); // ricrea i chunk in base la posiozne del player
+
+        if (!ApplyingModifications) // applica le modifche dei chunk
+            ApplyModifications();
+
+        if (ChunksToCreate.Count > 0) // crea i chunk
+            CreateChunk();
+
+        if (ChunksToUpdate.Count > 0) // aggiorna i chunk
+            UpdateChunks();
+
+        if(ChunksToDraw.Count > 0)
+            lock (ChunksToDraw)
+            {
+
+                if (ChunksToDraw.Peek().isEditable)
+                    ChunksToDraw.Dequeue().CreateMesh();
+
+            }
+
+
+
+
+        if (Input.GetKeyDown(KeyCode.T))
+            ConsoleScreen.SetActive(!ConsoleScreen.activeSelf);
+
+        if (Input.GetKeyDown(KeyCode.F2))
+        {
+
+            ToolBar.SetActive(!ToolBar.activeSelf);
+            Cursor.SetActive(!Cursor.activeSelf);
+
+        }
+
+        if (Input.GetKeyDown(KeyCode.F3))
+            DebugScreen.SetActive(!DebugScreen.activeSelf);
+
+    } // controlla la render distance per generare i nuovi chunk
+
+
+
+     void GenerateWorld () {
+
+        for (int x = (MeshData.WorldSizeInChunks / 2) - MeshData.ViewDistanceInChunks; x < (MeshData.WorldSizeInChunks / 2) + MeshData.ViewDistanceInChunks; x++) 
+        {
+
+            for (int z = (MeshData.WorldSizeInChunks / 2) - MeshData.ViewDistanceInChunks; z < (MeshData.WorldSizeInChunks / 2) + MeshData.ViewDistanceInChunks; z++)
+            {
+
+                Chunks[x, z] = new ChunkGeneretor(new ChunkCoord(x, z), this, true);
+                activeChunks.Add(new ChunkCoord(x, z));
+
+            }
+
+        }
+
+        Player.position = SpawnPoint;
+
+    }
+
+    void CreateChunk () {
+
+        ChunkCoord c = ChunksToCreate[0];
+        ChunksToCreate.RemoveAt(0);
+        activeChunks.Add(c);
+        Chunks[c.x, c.z].Init();
+
+    }
+
+    void UpdateChunks () 
+    {
+
+        bool updated = false;
+        int index = 0;
+
+        while (!updated && index < ChunksToUpdate.Count - 1) {
+
+            if (ChunksToUpdate[index].isEditable) 
+            {
+
+                ChunksToUpdate[index].UpdateChunk();
+                ChunksToUpdate.RemoveAt(index);
+                updated = true;
+
+            } 
+            
+            else
+                index++;
+
+        }
+
+    }
+
+    void ApplyModifications () 
+    {
+
+        ApplyingModifications = true;
+
+        while (Modifications.Count > 0) 
+        {
+
+            Queue<VoxelMod> queue = Modifications.Dequeue();
+
+            while (queue.Count > 0) 
+            {
+
+                VoxelMod v = queue.Dequeue();
+
+                ChunkCoord c = GetChunkCoordFromVector3(v.position);
+
+                if (Chunks[c.x, c.z] == null) 
+                {
+
+                    Chunks[c.x, c.z] = new ChunkGeneretor(c, this, true);
+                    activeChunks.Add(c);
+
+                }
+
+                Chunks[c.x, c.z].Modifications.Enqueue(v);
+
+                if (!ChunksToUpdate.Contains(Chunks[c.x, c.z]))
+                    ChunksToUpdate.Add(Chunks[c.x, c.z]);
+
+            }
+        }
+
+        ApplyingModifications = false;
+
+    }
+
+    ChunkCoord GetChunkCoordFromVector3 (Vector3 pos) 
+    {
+
+        int x = Mathf.FloorToInt(pos.x / MeshData.ChunkWidth);
+        int z = Mathf.FloorToInt(pos.z / MeshData.ChunkWidth);
+        return new ChunkCoord(x, z);
+
+    }
+
+    public ChunkGeneretor GetChunkFromVector3 (Vector3 pos) 
+    {
+
+        int x = Mathf.FloorToInt(pos.x / MeshData.ChunkWidth);
+        int z = Mathf.FloorToInt(pos.z / MeshData.ChunkWidth);
+        return Chunks[x, z];
+
+    }
+
+    void CheckViewDistance ()
+    {
+
+        ChunkCoord coord = GetChunkCoordFromVector3(Player.position);
+        PlayerLastChunkCoord = PlayerChunkCoord;
+
+        List<ChunkCoord> previouslyActiveChunks = new List<ChunkCoord>(activeChunks);
+
+        // Loop through all Chunks currently within view distance of the player.
+        for (int x = coord.x - MeshData.ViewDistanceInChunks; x < coord.x + MeshData.ViewDistanceInChunks; x++) 
+        {
+
+            for (int z = coord.z - MeshData.ViewDistanceInChunks; z < coord.z + MeshData.ViewDistanceInChunks; z++) 
+            {
+
+                // If the current chunk is in the world...
+                if (IsChunkInWorld (new ChunkCoord (x, z))) {
+
+                    // Check if it active, if not, activate it.
+                    if (Chunks[x, z] == null) 
+                    {
+
+                        Chunks[x, z] = new ChunkGeneretor(new ChunkCoord(x, z), this, false);
+                        ChunksToCreate.Add(new ChunkCoord(x, z));
+
+                    }  
+
+                    else if (!Chunks[x, z].isActive) 
+                    {
+
+                        Chunks[x, z].isActive = true;
+
+                    }
+
+                    activeChunks.Add(new ChunkCoord(x, z));
+
+                }
+
+                // Check through previously active Chunks to see if this chunk is there. If it is, remove it from the list.
+                for (int i = 0; i < previouslyActiveChunks.Count; i++) {
+
+                    if (previouslyActiveChunks[i].Equals(new ChunkCoord(x, z)))
+                        previouslyActiveChunks.RemoveAt(i);
+                       
+                }
+
+            }
+        }
+
+        // Any Chunks left in the previousActiveChunks list are no longer in the player's view distance, so loop through and disable them.
+        foreach (ChunkCoord c in previouslyActiveChunks)
+            Chunks[c.x, c.z].isActive = false;
+
+    }
+
+    public bool CheckForVoxel (Vector3 pos) 
+    {
+
+        ChunkCoord thisChunk = new ChunkCoord(pos);
+
+        if (!IsChunkInWorld(thisChunk) || pos.y < 0 || pos.y > MeshData.ChunkHeight)
+            return false;
+
+        if (Chunks[thisChunk.x, thisChunk.z] != null && Chunks[thisChunk.x, thisChunk.z].isEditable)
+            return blocktype[Chunks[thisChunk.x, thisChunk.z].GetVoxelFromGlobalVector3(pos)].IsSolid;
+
+        return blocktype[GetVoxel(pos)].IsSolid;
+
+    }
+
+    public bool CheckIfVoxelTransparent (Vector3 pos) 
+    {
+
+        ChunkCoord thisChunk = new ChunkCoord(pos);
+
+        if (!IsChunkInWorld(thisChunk) || pos.y < 0 || pos.y > MeshData.ChunkHeight)
+            return false;
+
+        if (Chunks[thisChunk.x, thisChunk.z] != null && Chunks[thisChunk.x, thisChunk.z].isEditable)
+            return blocktype[Chunks[thisChunk.x, thisChunk.z].GetVoxelFromGlobalVector3(pos)].IsTransapent;
+
+        return blocktype[GetVoxel(pos)].IsTransapent;
+
+    }
+
+    public bool InUI 
+    {
+
+        get { return _InUi; }
+
+        set {
+
+            _InUi = value;
+
+
+        }
+
+    }
+
+    public byte GetVoxel (Vector3 pos) 
+    {
+
+        int yPos = Mathf.FloorToInt(pos.y);
+
+        /* IMMUTABLE PASS */
+
+        // If outside world, return air.
+        if (!IsVoxelInWorld(pos))
+            return 0;
+
+        // If bottom block of chunk, return bedrock.
+        if (yPos == 0)
+            return 9;
+
+        /* BASIC TERRAIN PASS */
+
+        int terrainHeight = Mathf.FloorToInt(Biome.TerrainHeight * NoiseGeneretor.Get2DPerlin(new Vector2(pos.x, pos.z), 0, Biome.TerrainScale)) + Biome.SolidGroundHeight;
+        byte voxelValue = 0;
+
+        if (yPos == terrainHeight)
+            voxelValue = 4;
+
+        else if (yPos < terrainHeight && yPos > terrainHeight - 4)
+            voxelValue = 2;
+
+        else if (yPos > terrainHeight)
+            return 0;
+
+        else
+            voxelValue = 1;
+
+        /* SECOND PASS */
+
+        if (voxelValue == 1) 
+        {
+
+            foreach (Lode lode in Biome.Lodes) 
+            {
+
+
+                if (yPos > lode.MinHeight && yPos < lode.MaxHeight)
+                    if (NoiseGeneretor.Get3DPerlin(pos, lode.NoiseOffSet, lode.Scale, lode.Threshold))
+                        voxelValue = lode.BlockID;
+
+            }
+
+        }
+
+        /* TREE PASS */
+
+        if (yPos == terrainHeight) 
+        {
+
+            if (NoiseGeneretor.Get2DPerlin(new Vector2(pos.x, pos.z), 0, Biome.TreeZoneScale) > Biome.TreeZoneThreshold) 
+            {
+
+                if (NoiseGeneretor.Get2DPerlin(new Vector2(pos.x, pos.z), 0, Biome.TreePlacementScale) > Biome.TreePlacementThreshold) 
+                {
+
+                    Modifications.Enqueue(Structure.MakeTree(pos, Biome.MinTreeHeight, Biome.MaxTreeHeight));
+
+                }
+
+            }
+
+        }
+
+        return voxelValue;
+
+    }
+
+    bool IsChunkInWorld (ChunkCoord coord) 
+    {
+
+        if (coord.x > 0 && coord.x < MeshData.WorldSizeInChunks - 1 && coord.z > 0 && coord.z < MeshData.WorldSizeInChunks - 1)
+            return true;
+
+        else
+            return false;
+
+    }
+
+    bool IsVoxelInWorld (Vector3 pos) 
+    {
+
+        if (pos.x >= 0 && pos.x < MeshData.WorldSizeInBlocks && pos.y >= 0 && pos.y < MeshData.ChunkHeight && pos.z >= 0 && pos.z < MeshData.WorldSizeInBlocks)
+            return true;
+
+        else
+            return false;
+
+    }
+
+}
+
+
+//Data
+[System.Serializable]
+public class BlockType // memorizza e restituisce le informazioni dei blocchi
+{
+
+    public string BlockName; // memorizza il nome del blocco
+    public Sprite BlockSprite;
+    public bool IsSolid; // memozizza informazione se il blocco e solido ho no
+    public bool IsTransapent; // memorizza se il blocco e trasparente
+    public float TimeToBreak;
+
+    [Header("Texture Value")]
+    public int FrontFaceTexure; // numero di riconoscimento della texture di fronte
+    public int BackFaceTexure; // numero di riconoscimento della texture di dietro
+    public int TopFaceTexure; // numero di riconoscimento della texture sopra
+    public int BottonFaceTexure; // numero di riconoscimento della texture sotto
+    public int LeftFaceTexure; // numero di riconoscimento della texture destre
+    public int RightFaceTexure; // numero di riconoscimento della texture sinista
+
+    public int GetTexture(int FaceIndex) // tramite il daceIndex restituisce un valore di texture
+    {
+
+        switch (FaceIndex)
+        {
+
+            case 0: // restituisce la texture di fronte
+
+                return FrontFaceTexure;
+
+            case 1: // restituisce la texture di dietr
+
+                return BackFaceTexure;
+
+            case 2: // restituisce la texture di sopra
+
+                return TopFaceTexure;
+
+            case 3: // restituisce la texture di sotto
+
+                return BottonFaceTexure;
+
+            case 4: // restituisce la texture di destra
+
+                return LeftFaceTexure;
+
+            case 5: // restituisce la texture di sinistra
+
+                return RightFaceTexure;
+
+            default: // errore nella selezione della texture
+
+                Debug.Log("Errore nel FaceIndex GetFace");
+                return -1;
+
+
+        }
+
+    }
+
+}
+public class VoxelMod
+{
+
+    public Vector3 position;
+    public byte id;
+
+    public VoxelMod()
+    {
+
+        position = new Vector3();
+        id = 0;
+
+    }
+
+    public VoxelMod(Vector3 _position, byte _id)
+    {
+
+        position = _position;
+        id = _id;
+
+    }
+
+}
+
+
